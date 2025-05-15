@@ -137,12 +137,11 @@ require (
 	github.com/dgryski/go-sip13 v0.0.0-20200911182023-62edffca9245
 	github.com/dusk-network/bn256 v0.5.1-lattices
 	github.com/dustinxie/ecc v0.0.0-20210511000915-959544187564
-	github.com/edwingeng/deque/v2 v2.1.1
 	github.com/ethereum/go-ethereum v1.12.0
 	github.com/fatih/color v1.16.0 // indirect
 	github.com/filosottile/powersoftau v0.0.0-20180220134833-e2af11381747
 	github.com/gagliardetto/treeout v0.1.4 // indirect
-	github.com/gammazero/deque v0.2.1
+	github.com/gammazero/deque v1.0.0
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-mmap/mmap v0.7.0
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect

@@ -8,7 +8,7 @@ import (
 	"github.com/Overclock-Validator/mithril/pkg/features"
 	"github.com/Overclock-Validator/mithril/pkg/mlog"
 	"github.com/Overclock-Validator/mithril/pkg/safemath"
-	"github.com/edwingeng/deque/v2"
+	"github.com/gammazero/deque"
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
 	"github.com/tidwall/btree"
@@ -395,7 +395,8 @@ func (voteState *VoteState0_23_5) UnmarshalWithDecoder(decoder *bin.Decoder) err
 		return err
 	}
 
-	voteState.Votes = deque.NewDeque[VoteLockout]()
+	voteState.Votes.Clear()
+	voteState.Votes.SetBaseCap(int(numLockouts))
 	for count := uint64(0); count < numLockouts; count++ {
 		var lockout VoteLockout
 		err = lockout.UnmarshalWithDecoder(decoder)
@@ -473,14 +474,13 @@ func (voteState *VoteState0_23_5) MarshalWithEncoder(encoder *bin.Encoder) error
 	if err != nil {
 		return err
 	}
-	voteState.Votes.Range(func(i int, lockout VoteLockout) bool {
+	for i := 0; i< voteState.Votes.Len(); i++ {
+		lockout := voteState.Votes.At(i)
 		err = lockout.MarshalWithEncoder(encoder)
 		if err != nil {
-			return false
-		} else {
-			return true
+			break
 		}
-	})
+	}
 
 	if err != nil {
 		return err
@@ -736,8 +736,8 @@ func (voteState *VoteState1_14_11) UnmarshalWithDecoder(decoder *bin.Decoder) er
 		return err
 	}
 
-	votes := deque.NewDeque[VoteLockout]()
-	voteState.Votes = *votes
+	voteState.Votes.Clear()
+	voteState.Votes.SetBaseCap(int(numLockouts))
 	for count := uint64(0); count < numLockouts; count++ {
 		var lockout VoteLockout
 		err = lockout.UnmarshalWithDecoder(decoder)
@@ -809,14 +809,13 @@ func (voteState *VoteState1_14_11) MarshalWithEncoder(encoder *bin.Encoder) erro
 		return err
 	}
 
-	voteState.Votes.Range(func(i int, lockout VoteLockout) bool {
+	for i := 0; i < voteState.Votes.Len(); i++ {
+		lockout := voteState.Votes.At(i)
 		err = lockout.MarshalWithEncoder(encoder)
 		if err != nil {
-			return false
-		} else {
-			return true
+			break
 		}
-	})
+	}
 
 	if voteState.RootSlot != nil {
 		err = encoder.WriteBool(true)
@@ -884,8 +883,8 @@ func (voteState *VoteState) UnmarshalWithDecoder(decoder *bin.Decoder) error {
 		return err
 	}
 
-	votes := deque.NewDeque[LandedVote]()
-	voteState.Votes = *votes
+	voteState.Votes.Clear()
+	voteState.Votes.SetBaseCap(int(numLockouts))
 	for count := uint64(0); count < numLockouts; count++ {
 		var landedVote LandedVote
 		err = landedVote.UnmarshalWithDecoder(decoder)
@@ -957,14 +956,13 @@ func (voteState *VoteState) MarshalWithEncoder(encoder *bin.Encoder) error {
 		return err
 	}
 
-	voteState.Votes.Range(func(i int, landedVote LandedVote) bool {
+	for i := 0; i < voteState.Votes.Len(); i++ {
+		landedVote := voteState.Votes.At(i)
 		err = landedVote.MarshalWithEncoder(encoder)
 		if err != nil {
-			return false
-		} else {
-			return true
+			break
 		}
-	})
+	}
 
 	if voteState.RootSlot != nil {
 		err = encoder.WriteBool(true)
@@ -1073,10 +1071,10 @@ func (voteState *VoteState) SetNewAuthorizedVoter(authorized solana.PublicKey, c
 }
 
 func (voteState *VoteState) LastLockout() *VoteLockout {
-	landedVote, ok := voteState.Votes.Back()
-	if !ok {
+	if voteState.Votes.Len() == 0 {
 		return nil
 	}
+	landedVote := voteState.Votes.Back()
 	return &landedVote.Lockout
 }
 
@@ -1107,7 +1105,8 @@ func (voteState *VoteState) PopExpiredVotes(nextVoteSlot uint64) {
 func (voteState *VoteState) DoubleLockouts() {
 	var indicesToIncreaseConfirmationCount []int
 	stackDepth := uint64(voteState.Votes.Len())
-	voteState.Votes.Range(func(idx int, landedVote LandedVote) bool {
+	for idx := 0; idx < voteState.Votes.Len(); idx++ {
+		landedVote := voteState.Votes.At(idx)
 		j, err := safemath.CheckedAddU64(uint64(idx), uint64(landedVote.Lockout.ConfirmationCount))
 		if err != nil {
 			panic("`confirmation_count` and tower_size should be bounded by `MAX_LOCKOUT_HISTORY`")
@@ -1115,32 +1114,23 @@ func (voteState *VoteState) DoubleLockouts() {
 		if stackDepth > j {
 			indicesToIncreaseConfirmationCount = append(indicesToIncreaseConfirmationCount, idx)
 		}
-		return true
-	})
+	}
 
 	for _, idx := range indicesToIncreaseConfirmationCount {
-		landedVote := voteState.Votes.Peek(idx)
+		landedVote := voteState.Votes.At(idx)
 		landedVote.Lockout.IncreaseConfirmationCount(1)
-		voteState.Votes.Replace(idx, landedVote)
+		voteState.Votes.Set(idx, landedVote)
 	}
 }
 
 func (voteState *VoteState) ContainsSlot(candidateSlot uint64) bool {
-	var foundCandidateSlot bool
-	voteState.Votes.Range(func(i int, v LandedVote) bool {
+	for i := 0; i < voteState.Votes.Len(); i++ {
+		v := voteState.Votes.At(i)
 		if v.Lockout.Slot == candidateSlot {
-			foundCandidateSlot = true
-			return false
-		} else {
 			return true
 		}
-	})
-
-	if foundCandidateSlot {
-		return true
-	} else {
-		return false
 	}
+	return false
 }
 
 const (
@@ -1152,7 +1142,7 @@ const (
 )
 
 func (voteState *VoteState) CreditsForVoteAtIndex(index uint64, timelyVoteCredits, deprecateUnusedLegacyVotePlumbing bool) uint64 {
-	landedVote := voteState.Votes.Peek(int(index))
+	landedVote := voteState.Votes.At(int(index))
 	latency := landedVote.Latency
 
 	var maxCredits byte
@@ -1335,13 +1325,12 @@ func (voteStateVersions *VoteStateVersions) ConvertToCurrent() *VoteState {
 				PriorVoters:          PriorVoters{Index: 31, IsEmpty: true},
 			}
 
-			votes := deque.NewDeque[LandedVote]()
-			newVoteState.Votes = *votes
-
-			state.Votes.Range(func(i int, lockout VoteLockout) bool {
+			newVoteState.Votes.Clear()
+			newVoteState.Votes.SetBaseCap(state.Votes.Len())
+			for i := 0; i < state.Votes.Len(); i++ {
+				lockout := state.Votes.At(i)
 				newVoteState.Votes.PushBack(LandedVote{Latency: 0, Lockout: lockout})
-				return true
-			})
+			}
 
 			return newVoteState
 		}
@@ -1359,13 +1348,12 @@ func (voteStateVersions *VoteStateVersions) ConvertToCurrent() *VoteState {
 				EpochCredits:         state.EpochCredits,
 				LastTimestamp:        state.LastTimestamp}
 
-			votes := deque.NewDeque[LandedVote]()
-			newVoteState.Votes = *votes
-
-			state.Votes.Range(func(i int, lockout VoteLockout) bool {
+			newVoteState.Votes.Clear()
+			newVoteState.Votes.SetBaseCap(state.Votes.Len())
+			for i := 0; i < state.Votes.Len(); i++ {
+				lockout := state.Votes.At(i)
 				newVoteState.Votes.PushBack(LandedVote{Latency: 0, Lockout: lockout})
-				return true
-			})
+			}
 
 			return newVoteState
 		}
@@ -1417,13 +1405,11 @@ func newVoteState1_14_11FromCurrent(voteState *VoteState) *VoteState1_14_11 {
 	newVoteState.EpochCredits = voteState.EpochCredits
 	newVoteState.LastTimestamp = voteState.LastTimestamp
 
-	votes := deque.NewDeque[VoteLockout]()
-	newVoteState.Votes = *votes
-
-	voteState.Votes.Range(func(i int, landedVote LandedVote) bool {
+	newVoteState.Votes.SetBaseCap(voteState.Votes.Len())
+	for i := 0; i < voteState.Votes.Len(); i++ {
+		landedVote := voteState.Votes.At(i)
 		newVoteState.Votes.PushBack(landedVote.Lockout)
-		return true
-	})
+	}
 
 	return newVoteState
 }

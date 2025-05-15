@@ -8,7 +8,7 @@ import (
 	"github.com/Overclock-Validator/mithril/pkg/features"
 	"github.com/Overclock-Validator/mithril/pkg/mlog"
 	"github.com/Overclock-Validator/mithril/pkg/safemath"
-	"github.com/edwingeng/deque/v2"
+	"github.com/gammazero/deque"
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
 	"k8s.io/klog/v2"
@@ -300,9 +300,8 @@ func (updateVoteState *VoteInstrUpdateVoteState) UnmarshalWithDecoder(decoder *b
 		return err
 	}
 
-	lockouts := deque.NewDeque[VoteLockout]()
-	updateVoteState.Lockouts = *lockouts
-
+	updateVoteState.Lockouts.Clear()
+	updateVoteState.Lockouts.SetBaseCap(int(numLockouts))
 	for count := uint64(0); count < numLockouts; count++ {
 		var lockout VoteLockout
 		err = lockout.UnmarshalWithDecoder(decoder)
@@ -380,8 +379,7 @@ func (updateVoteState *VoteInstrUpdateVoteState) BuildFromCompactUpdateVoteState
 		slot = *updateVoteState.Root
 	}
 
-	lockouts := deque.NewDeque[VoteLockout]()
-	updateVoteState.Lockouts = *lockouts
+	updateVoteState.Lockouts.Clear()
 	for _, lockoutOffset := range compactUpdateVoteState.LockoutOffsets {
 		nextSlot, err := safemath.CheckedAddU64(slot, lockoutOffset.Offset)
 		if err != nil {
@@ -552,9 +550,8 @@ func (towerSync *VoteInstrTowerSync) UnmarshalWithDecoder(decoder *bin.Decoder) 
 		lastSlot = *towerSync.Root
 	}
 
-	lockouts := deque.NewDeque[VoteLockout]()
-	towerSync.Lockouts = *lockouts
-
+	towerSync.Lockouts.Clear()
+	towerSync.Lockouts.SetBaseCap(int(lockoutOffsetsLen))
 	for i := uint64(0); i < uint64(lockoutOffsetsLen); i++ {
 		var lockoutOffset LockoutOffset
 		err = lockoutOffset.UnmarshalWithDecoder(decoder)
@@ -1412,19 +1409,16 @@ func VoteProgramProcessVote(voteAcct *BorrowedAccount, slotHashes SysvarSlotHash
 }
 
 func checkUpdateVoteStateAndSlotsAreValid(voteState *VoteState, proposedLockouts *deque.Deque[VoteLockout], proposedRoot **uint64, proposedHash [32]byte, slotHashes SysvarSlotHashes) error {
-	if proposedLockouts.IsEmpty() {
+	if proposedLockouts.Len() == 0 {
 		return VoteErrEmptySlots
 	}
 
-	lastVoteStateUpdateLockout, ok := proposedLockouts.Back()
-	if !ok {
-		panic("must be nonempty, checked above")
-	}
+	lastVoteStateUpdateLockout := proposedLockouts.Back()
 
 	lastVoteStateUpdateSlot := lastVoteStateUpdateLockout.Slot
 
-	lastLandedVote, ok := voteState.Votes.Back()
-	if ok {
+	if voteState.Votes.Len() > 0 {
+		lastLandedVote := voteState.Votes.Back()
 		lastVoteSlot := lastLandedVote.Lockout.Slot
 		if lastVoteStateUpdateSlot <= lastVoteSlot {
 			mlog.Log.Debugf("lastVoteStateUpdateSlot (%d) <= lastVoteSlot (%d)", lastVoteStateUpdateSlot, lastVoteSlot)
@@ -1450,16 +1444,8 @@ func checkUpdateVoteStateAndSlotsAreValid(voteState *VoteState, proposedLockouts
 
 			// Agave iterates in reverse, so we collect all entries into a slice
 			// and then reverse the order
-			var landedVotes []LandedVote
-			voteState.Votes.Range(func(i int, v LandedVote) bool {
-				landedVotes = append(landedVotes, v)
-				return true
-			})
-			/*for i, j := 0, len(landedVotes)-1; i < j; i, j = i+1, j-1 {
-				landedVotes[i], landedVotes[j] = landedVotes[j], landedVotes[i]
-			}*/
-
-			for _, vote := range landedVotes {
+			for i := voteState.Votes.Len()-1; i >= 0; i-- {
+				vote := voteState.Votes.At(i)
 				if vote.Lockout.Slot <= pRoot {
 					*proposedRoot = &vote.Lockout.Slot
 					break
@@ -1478,7 +1464,7 @@ func checkUpdateVoteStateAndSlotsAreValid(voteState *VoteState, proposedLockouts
 		if rootToCheck != nil {
 			proposedVoteSlot = *rootToCheck
 		} else {
-			proposedVoteSlot = proposedLockouts.Peek(int(voteStateUpdateIndex)).Slot
+			proposedVoteSlot = proposedLockouts.At(int(voteStateUpdateIndex)).Slot
 		}
 
 		if rootToCheck == nil && voteStateUpdateIndex > 0 {
@@ -1486,7 +1472,7 @@ func checkUpdateVoteStateAndSlotsAreValid(voteState *VoteState, proposedLockouts
 			if err != nil {
 				panic("`vote_state_update_index` is positive when checking `SlotsNotOrdered`")
 			}
-			if proposedVoteSlot <= proposedLockouts.Peek(int(i)).Slot {
+			if proposedVoteSlot <= proposedLockouts.At(int(i)).Slot {
 				return VoteErrSlotsNotOrdered
 			}
 		}
@@ -1571,8 +1557,9 @@ func checkUpdateVoteStateAndSlotsAreValid(voteState *VoteState, proposedLockouts
 	filterVotesIndex := uint64(0)
 	var lockoutsToKeep []VoteLockout
 
-	proposedLockouts.Range(func(i int, lockout VoteLockout) bool {
+	for i := 0; i < proposedLockouts.Len(); i++ {
 		var err error
+		lockout := proposedLockouts.At(i)
 		if filterVotesIndex == uint64(len(voteStateUpdateIndicesToFilter)) {
 			lockoutsToKeep = append(lockoutsToKeep, lockout)
 		} else if voteStateUpdateIndex == voteStateUpdateIndicesToFilter[filterVotesIndex] {
@@ -1584,8 +1571,7 @@ func checkUpdateVoteStateAndSlotsAreValid(voteState *VoteState, proposedLockouts
 		if err != nil {
 			panic("`vote_state_update_index` is bounded by `MAX_LOCKOUT_HISTORY` when filtering out irrelevant votes")
 		}
-		return true
-	})
+	}
 
 	proposedLockouts.Clear()
 
@@ -1602,7 +1588,7 @@ type latencyUpdate struct {
 }
 
 func processNewVoteState(voteState *VoteState, newState *deque.Deque[LandedVote], newRoot *uint64, timestamp *int64, epoch uint64, currentSlot uint64, f features.Features) error {
-	if newState.IsEmpty() {
+	if newState.Len() == 0 {
 		panic("newState should not be empty")
 	}
 
@@ -1623,35 +1609,35 @@ func processNewVoteState(voteState *VoteState, newState *deque.Deque[LandedVote]
 
 	var errToReturn error
 
-	newState.Range(func(i int, vote LandedVote) bool {
+	for i := 0; i < newState.Len(); i++ {
+		vote := newState.At(i)
 		if vote.Lockout.ConfirmationCount == 0 {
 			errToReturn = VoteErrZeroConfirmations
-			return false
+			break
 		} else if vote.Lockout.ConfirmationCount > MaxLockoutHistory {
 			errToReturn = VoteErrConfirmationTooLarge
-			return false
+			break
 		} else if newRoot != nil {
 			if vote.Lockout.Slot <= *newRoot && *newRoot != 0 {
 				errToReturn = VoteErrSlotSmallerThanRoot
-				return false
+				break
 			}
 		}
 
 		if previousVote != nil {
 			if previousVote.Lockout.Slot >= vote.Lockout.Slot {
 				errToReturn = VoteErrSlotsNotOrdered
-				return false
+				break
 			} else if previousVote.Lockout.ConfirmationCount <= vote.Lockout.ConfirmationCount {
 				errToReturn = VoteErrConfirmationsNotOrdered
-				return false
+				break
 			} else if vote.Lockout.Slot > previousVote.Lockout.LastLockedOutSlot() {
 				errToReturn = VoteErrNewVoteStateLockoutMismatch
-				return false
+				break
 			}
 		}
 		previousVote = &vote
-		return true
-	})
+	}
 
 	if errToReturn != nil {
 		return errToReturn
@@ -1672,7 +1658,8 @@ func processNewVoteState(voteState *VoteState, newState *deque.Deque[LandedVote]
 	}
 
 	if newRoot != nil {
-		voteState.Votes.Range(func(i int, currentVote LandedVote) bool {
+		for i := 0; i < voteState.Votes.Len(); i++ {
+			currentVote := voteState.Votes.At(i)
 			var err error
 			if currentVote.Lockout.Slot <= *newRoot {
 				if timelyVoteCredits || currentVote.Lockout.Slot != *newRoot {
@@ -1686,18 +1673,18 @@ func processNewVoteState(voteState *VoteState, newState *deque.Deque[LandedVote]
 				if err != nil {
 					panic("`current_vote_state_index` is bounded by `MAX_LOCKOUT_HISTORY` when processing new root")
 				}
-				return true
+				continue
 			}
-			return false
-		})
+			break
+		}
 	}
 
 	var stateUpdates []latencyUpdate
 
 	for currentVoteStateIndex < uint64(voteState.Votes.Len()) && newVoteStateIndex < uint64(newState.Len()) {
 		var err error
-		currentVote := voteState.Votes.Peek(int(currentVoteStateIndex))
-		newVote := newState.Peek(int(newVoteStateIndex))
+		currentVote := voteState.Votes.At(int(currentVoteStateIndex))
+		newVote := newState.At(int(newVoteStateIndex))
 
 		if currentVote.Lockout.Slot < newVote.Lockout.Slot {
 			if currentVote.Lockout.LastLockedOutSlot() >= newVote.Lockout.Slot {
@@ -1712,7 +1699,7 @@ func processNewVoteState(voteState *VoteState, newState *deque.Deque[LandedVote]
 				return VoteErrConfirmationRollback
 			}
 
-			newVote.Latency = voteState.Votes.Peek(int(currentVoteStateIndex)).Latency
+			newVote.Latency = voteState.Votes.At(int(currentVoteStateIndex)).Latency
 			stateUpdate := latencyUpdate{idx: int(newVoteStateIndex), state: newVote}
 			stateUpdates = append(stateUpdates, stateUpdate)
 
@@ -1734,24 +1721,24 @@ func processNewVoteState(voteState *VoteState, newState *deque.Deque[LandedVote]
 	}
 
 	for _, update := range stateUpdates {
-		newState.Replace(update.idx, update.state)
+		newState.Set(update.idx, update.state)
 	}
 
 	var latencyStateUpdates []latencyUpdate
 
 	if timelyVoteCredits {
-		newState.Range(func(i int, newVote LandedVote) bool {
+		for i := 0; i < newState.Len(); i++ {
+			newVote := newState.At(i)
 			if newVote.Latency == 0 {
 				newLandedVote := newVote
 				newLandedVote.Latency = computeVoteLatency(newVote.Lockout.Slot, currentSlot)
 				lsa := latencyUpdate{idx: i, state: newLandedVote}
 				latencyStateUpdates = append(latencyStateUpdates, lsa)
 			}
-			return true
-		})
+		}
 
 		for _, update := range latencyStateUpdates {
-			newState.Replace(update.idx, update.state)
+			newState.Set(update.idx, update.state)
 		}
 	}
 
@@ -1761,10 +1748,7 @@ func processNewVoteState(voteState *VoteState, newState *deque.Deque[LandedVote]
 
 	if timestamp != nil {
 		var err error
-		lastLandedVote, ok := newState.Back()
-		if !ok {
-			panic("newState should not be empty")
-		}
+		lastLandedVote := newState.Back()
 		lastSlot := lastLandedVote.Lockout.Slot
 		err = voteState.ProcessTimestamp(lastSlot, *timestamp)
 		if err != nil {
@@ -1791,11 +1775,11 @@ func VoteProgramProcessVoteStateUpdate(voteAcct *BorrowedAccount, slotHashes Sys
 		return err
 	}
 
-	newState := deque.NewDeque[LandedVote]()
-	voteStateUpdate.Lockouts.Range(func(i int, lockout VoteLockout) bool {
-		newState.PushBack(LandedVote{Latency: 0, Lockout: lockout})
-		return true
-	})
+	newState := &deque.Deque[LandedVote]{}
+	newState.SetBaseCap(voteStateUpdate.Lockouts.Len())
+	for i := 0; i < voteStateUpdate.Lockouts.Len(); i++ {
+		newState.PushBack(LandedVote{Latency: 0, Lockout: voteStateUpdate.Lockouts.At(i)})
+	}
 
 	err = processNewVoteState(voteState, newState, voteStateUpdate.Root, voteStateUpdate.Timestamp, clock.Epoch, clock.Slot, f)
 	if err != nil {
@@ -1888,11 +1872,10 @@ func VoteProgramProcessTowerSync(voteAcct *BorrowedAccount, slotHashes SysvarSlo
 		return err
 	}
 
-	newState := deque.NewDeque[LandedVote]()
-	towerSync.Lockouts.Range(func(i int, lockout VoteLockout) bool {
-		newState.PushBack(LandedVote{Latency: 0, Lockout: lockout})
-		return true
-	})
+	newState := &deque.Deque[LandedVote]{}
+	for i := 0; i < towerSync.Lockouts.Len(); i++ {
+		newState.PushBack(LandedVote{Latency: 0, Lockout: towerSync.Lockouts.At(i)})
+	}
 
 	err = processNewVoteState(voteState, newState, towerSync.Root, towerSync.Timestamp, clock.Epoch, clock.Slot, f)
 	if err != nil {
