@@ -5,22 +5,27 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"sync/atomic"
+	"time"
 
 	"github.com/Overclock-Validator/mithril/pkg/accounts"
 	"github.com/Overclock-Validator/mithril/pkg/mlog"
 	"github.com/Overclock-Validator/mithril/pkg/sbpf"
 	"github.com/Overclock-Validator/mithril/pkg/util"
-	"github.com/Overclock-Validator/sniper"
+
+	// "github.com/Overclock-Validator/sniper"
+	"github.com/dgraph-io/badger/v4"
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
 	"github.com/maypok86/otter"
 )
 
 type AccountsDb struct {
-	IndexDb         *sniper.Store
+	IndexDb         *badger.DB
+	StopGc          chan struct{}
 	AcctsDir        string
 	IndexDir        string
 	LargestFileId   atomic.Uint64
@@ -33,6 +38,64 @@ type AccountsDb struct {
 var (
 	ErrNoAccount = errors.New("ErrNoAccount")
 )
+
+func OpenBadgerForSnapshot(dbDir string) (*badger.DB, error) {
+	dbOpts := badger.DefaultOptions(dbDir)
+	dbOpts.BlockCacheSize = 8 * 1024 * 1024 * 1024
+	dbOpts.NumCompactors = 12
+	dbOpts.NumGoroutines = 24
+	dbOpts.NumMemtables = 24
+	dbOpts.MemTableSize = 1024 * 1024 * 1024
+	dbOpts.CompactL0OnClose = true
+
+	db, err := badger.OpenManaged(dbOpts)
+	if err != nil {
+		mlog.Log.Infof("failed to open database: %s\n", err)
+		return nil, err
+	}
+
+	return db, nil
+}
+
+func OpenBadgerWithRecommendedOptions(dbDir string) (*badger.DB, error) {
+	dbOpts := badger.DefaultOptions(dbDir)
+	dbOpts.IndexCacheSize = 10 * 1024 * 1024 * 1024
+	dbOpts.BlockCacheSize = 1024 * 1024 * 1024
+	dbOpts.NumCompactors = 8
+	dbOpts.NumGoroutines = 16
+	dbOpts.NumMemtables = 16
+	dbOpts.MemTableSize = 256 * 1024 * 1024
+	db, err := badger.Open(dbOpts)
+	if err != nil {
+		mlog.Log.Infof("failed to open database: %s\n", err)
+		return nil, err
+	}
+
+	return db, nil
+}
+
+// start a goroutine to clean up badger db
+// returns a channel to stop the gc thread
+func BadgerGcThread(db *badger.DB) chan struct{} {
+	stopGc := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopGc:
+				return
+			case <-ticker.C:
+			again:
+				err := db.RunValueLogGC(0.7)
+				if err == nil {
+					goto again
+				}
+			}
+		}
+	}()
+	return stopGc
+}
 
 func OpenDb(accountsDbDir string) (*AccountsDb, error) {
 	// check for existence of the 'accounts' directory, which holds the appendvecs
@@ -83,14 +146,16 @@ func OpenDb(accountsDbDir string) (*AccountsDb, error) {
 
 	// attempt to open the index kv store
 	indexDir := fmt.Sprintf("%s/index", accountsDbDir)
-	db, err := sniper.Open(sniper.Dir(indexDir), sniper.ChunksCollision(32))
+	db, err := OpenBadgerWithRecommendedOptions(indexDir)
 	if err != nil {
 		mlog.Log.Infof("failed to open database: %s\n", err)
 		return nil, err
 	}
 	mlog.Log.Infof("accountsdb.OpenDb: done opening indexDir=%s", indexDir)
 
-	accountsDb := &AccountsDb{IndexDb: db, AcctsDir: appendVecsDir, IndexDir: indexDir}
+	stopGc := BadgerGcThread(db)
+
+	accountsDb := &AccountsDb{IndexDb: db, StopGc: stopGc, AcctsDir: appendVecsDir, IndexDir: indexDir}
 	accountsDb.LargestFileId.Store(largestFileId)
 	copy(accountsDb.BankHashBytes[:], bankHashBytes)
 
@@ -98,6 +163,7 @@ func OpenDb(accountsDbDir string) (*AccountsDb, error) {
 }
 
 func (accountsDb *AccountsDb) CloseDb() {
+	accountsDb.StopGc <- struct{}{}
 	accountsDb.IndexDb.Close()
 }
 
@@ -152,7 +218,16 @@ func (accountsDb *AccountsDb) GetAccount(slot uint64, pubkey solana.PublicKey) (
 		return cachedAcct, nil
 	}
 
-	acctIdxEntryBytes, err := accountsDb.IndexDb.Get(pubkey[:])
+	var acctIdxEntryBytes []byte
+	err := accountsDb.IndexDb.View(func(txn *badger.Txn) error {
+		prefixedKey := pubKeyWithPrefix(pubkey[:])
+		item, err := txn.Get(prefixedKey)
+		if err != nil {
+			return err
+		}
+		acctIdxEntryBytes, err = item.ValueCopy(nil)
+		return err
+	})
 	if err != nil {
 		mlog.Log.Debugf("no account found in accountsdb for pubkey %s: %s", pubkey, err)
 		return nil, ErrNoAccount
@@ -184,7 +259,7 @@ func (accountsDb *AccountsDb) GetAccount(slot uint64, pubkey solana.PublicKey) (
 	}
 
 	if acct.Key != pubkey {
-		panic(fmt.Sprintf("account unmarshaled from appendvec file %s has the wrong pubkey", appendVecFileName))
+		panic(fmt.Sprintf("account unmarshaled from appendvec file %s has the wrong pubkey, expect: %s found: %s", appendVecFileName, pubkey, acct.Key))
 	}
 
 	acct.Slot = acctIdxEntry.Slot
@@ -198,6 +273,170 @@ func (accountsDb *AccountsDb) GetAccount(slot uint64, pubkey solana.PublicKey) (
 }
 
 var voteAcct = solana.MustPublicKeyFromBase58("Vote111111111111111111111111111111111111111")
+
+func pubKeyWithPrefix(pkRaw []byte) []byte {
+	prefixedKey := new(bytes.Buffer)
+	prefixedKey.WriteString("pubkey:")
+	prefixedKey.Write(pkRaw)
+
+	return prefixedKey.Bytes()
+}
+
+func SetAccountsForSlotSnapshot(indexDb *badger.DB, slot uint64, k, v [][]byte) {
+	writeBatch := indexDb.NewWriteBatchAt(slot)
+	defer writeBatch.Cancel()
+
+	for idx, k := range k {
+		prefixedKey := pubKeyWithPrefix(k)
+		accSlot := binary.LittleEndian.Uint64(v[idx])
+		entry := badger.NewEntry(prefixedKey, v[idx])
+		err := writeBatch.SetEntryAt(entry, accSlot)
+		if err != nil {
+			panic(fmt.Sprintf("error setting key %s: %s", prefixedKey, err))
+		}
+	}
+	err := writeBatch.Flush()
+	if err != nil {
+		panic(fmt.Sprintf("error flushing write batch: %s", err))
+	}
+
+	// for {
+	// 	err := indexDb.Update(func(txn *badger.Txn) error {
+	// 		prefixedKey := pubKeyWithPrefix(k)
+	// 		currentValItem, err := txn.Get(prefixedKey)
+
+	// 		if err == nil {
+	// 			currentVal, err := currentValItem.ValueCopy(nil)
+	// 			if err != nil {
+	// 				return err
+	// 			}
+	// 			newSlot := binary.LittleEndian.Uint64(v)
+	// 			existingSlot := binary.LittleEndian.Uint64(currentVal)
+
+	// 			if existingSlot >= newSlot {
+	// 				return nil
+	// 			}
+	// 		}
+
+	// 		err = txn.Set(prefixedKey, v)
+	// 		return err
+	// 	})
+
+	// 	if err == badger.ErrConflict {
+	// 		continue
+	// 	} else if err != nil {
+	// 		return err
+	// 	}
+
+	// 	return nil
+	// }
+}
+
+func BuildPrefixIndex(indexDb *badger.DB) error {
+	iterTxn := indexDb.NewTransactionAt(math.MaxUint64, false)
+	defer iterTxn.Discard()
+
+	txn := indexDb.NewTransactionAt(math.MaxUint64, true)
+
+	opts := badger.DefaultIteratorOptions
+	opts.Prefix = []byte("pubkey:")
+
+	it := iterTxn.NewIterator(opts)
+	defer it.Close()
+
+	for it.Rewind(); it.Valid(); it.Next() {
+		item := it.Item()
+		kRaw := item.Key()
+		slotBe := make([]byte, 8)
+		item.Value(func(v []byte) error {
+			slot := binary.LittleEndian.Uint64(v)
+			binary.BigEndian.PutUint64(slotBe, slot)
+			return nil
+		})
+
+		prefixIdxKey := new(bytes.Buffer)
+		prefixIdxKey.WriteString("prefixidx:")
+		prefixIdxKey.Write(slotBe)
+		prefixIdxKey.WriteString(":")
+		prefixIdxKey.Write(kRaw[7:])
+
+		err := txn.Set(prefixIdxKey.Bytes(), []byte{})
+		if err == badger.ErrTxnTooBig {
+			_ = txn.Commit()
+			txn = indexDb.NewTransactionAt(math.MaxUint64, true)
+			_ = txn.Set(prefixIdxKey.Bytes(), []byte{})
+		}
+	}
+
+	txn.Commit()
+
+	return nil
+}
+
+func SetIfSlotHigher(indexDb *badger.DB, k, v []byte) error {
+	for {
+		txn := indexDb.NewTransaction(true)
+		defer txn.Discard()
+
+		prefixedKey := pubKeyWithPrefix(k)
+		currentValItem, err := txn.Get(prefixedKey)
+		newSlot := binary.LittleEndian.Uint64(v)
+		if err == nil {
+			var existingSlot uint64
+			currentValItem.Value(func(v []byte) error {
+				existingSlot = binary.LittleEndian.Uint64(v)
+				return nil
+			});
+
+			if existingSlot >= newSlot {
+				return nil
+			}
+
+			oldSlotBe := make([]byte, 8)
+			binary.BigEndian.PutUint64(oldSlotBe, existingSlot)
+			oldPrefixIdxKey := new(bytes.Buffer)
+			oldPrefixIdxKey.WriteString("prefixidx:")
+			oldPrefixIdxKey.Write(oldSlotBe)
+			oldPrefixIdxKey.WriteString(":")
+			oldPrefixIdxKey.Write(k)
+
+			err = txn.Delete(oldPrefixIdxKey.Bytes())
+			if err != nil {
+				return err
+			}
+		} else if err != badger.ErrKeyNotFound {
+			return err
+		}
+
+		err = txn.Set(prefixedKey, v)
+		if err != nil {
+			return err
+		}
+
+		slotBe := make([]byte, 8)
+		binary.BigEndian.PutUint64(slotBe, newSlot)
+		prefixIdxKey := new(bytes.Buffer)
+		prefixIdxKey.WriteString("prefixidx:")
+		// ensures lexicographic ordering
+		prefixIdxKey.Write(slotBe)
+		prefixIdxKey.WriteString(":")
+		prefixIdxKey.Write(k)
+
+		// set to empty value
+		err = txn.Set(prefixIdxKey.Bytes(), []byte{})
+		if err != nil {
+			return err
+		}
+
+		err = txn.Commit()
+
+		if err == badger.ErrConflict {
+			continue
+		}
+
+		return err
+	}
+}
 
 func (accountsDb *AccountsDb) StoreAccounts(accts []*accounts.Account, slot uint64) error {
 	fileId := accountsDb.LargestFileId.Add(1)
@@ -237,7 +476,7 @@ func (accountsDb *AccountsDb) StoreAccounts(accts []*accounts.Account, slot uint
 			return err
 		}
 
-		err = accountsDb.IndexDb.SetIfSlotHigher(acct.Key[:], writer.Bytes(), 0)
+		err = SetIfSlotHigher(accountsDb.IndexDb, acct.Key[:], writer.Bytes())
 		if err != nil {
 			mlog.Log.Debugf("error calling SetIfSlotHigher on accountsdb for pubkey %s", acct.Key)
 			return err
@@ -268,19 +507,72 @@ func (accountsDb *AccountsDb) StoreAccounts(accts []*accounts.Account, slot uint
 }
 
 func (accountsDb *AccountsDb) KeysBetweenPrefixes(startPrefix uint64, endPrefix uint64) []solana.PublicKey {
-	keys := accountsDb.IndexDb.KeysBetweenPrefixes(startPrefix, endPrefix)
-
 	keyObjs := make([]solana.PublicKey, 0)
-	for _, key := range keys {
-		keyObject := solana.PublicKeyFromBytes(key)
-		keyObjs = append(keyObjs, keyObject)
+	err := accountsDb.IndexDb.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte("prefixidx:")
+		opts.PrefetchValues = false
+
+		slotBe := make([]byte, 8)
+		binary.BigEndian.PutUint64(slotBe, startPrefix)
+
+		minKeyBuf := new(bytes.Buffer)
+		minKeyBuf.WriteString("prefixidx:")
+		minKeyBuf.Write(slotBe)
+		minKeyBuf.WriteString(":")
+
+		minKey := minKeyBuf.Bytes()
+
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Seek(minKey); it.Valid(); it.Next() {
+			item := it.Item()
+			kRaw := item.Key()
+			// Slot is the 8 bytes after prefixidx:
+			slot := kRaw[10:18]
+			if binary.BigEndian.Uint64(slot) > endPrefix {
+				break
+			}
+			// pubkey comes after the slot + ":"
+			pubKeyRaw := kRaw[19:]
+
+			keyObject := solana.PublicKeyFromBytes(pubKeyRaw)
+			keyObjs = append(keyObjs, keyObject)
+
+		}
+
+		return nil
+	})
+	if err != nil {
+		panic(fmt.Sprintf("error in KeysBetweenPrefixes: %s", err))
 	}
 
 	return keyObjs
 }
 
 func (accountsDb *AccountsDb) AllKeys() [][]byte {
-	keys := accountsDb.IndexDb.AllKeys()
+	keys := make([][]byte, 0)
+	err := accountsDb.IndexDb.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.Prefix = []byte("pubkey:")
+		opts.PrefetchValues = false
+
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			kRaw := item.KeyCopy(nil)
+			keys = append(keys, kRaw[7:]) // strip off the prefix
+		}
+
+		return nil
+	})
+	if err != nil {
+		panic(fmt.Sprintf("error in AllKeys: %s", err))
+	}
+
 	sort.SliceStable(keys, func(i, j int) bool {
 		return util.PubkeyCmpByteSlice(keys[i], keys[j])
 	})

@@ -19,11 +19,11 @@ require (
 	github.com/quic-go/quic-go v0.36.0
 	github.com/segmentio/textio v1.2.0
 	github.com/spaolacci/murmur3 v1.1.0
-	github.com/spf13/cobra v1.8.1
+	github.com/spf13/cobra v1.9.1
 	github.com/stretchr/testify v1.10.0
 	github.com/vbauerster/mpb/v8 v8.4.0
 	golang.org/x/sync v0.12.0
-	golang.org/x/sys v0.31.0
+	golang.org/x/sys v0.33.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/klog/v2 v2.100.1
 )
@@ -57,19 +57,21 @@ require (
 	github.com/decred/base58 v1.0.5 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.0.1 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
-	github.com/dgraph-io/badger/v4 v4.3.0 // indirect
+	github.com/dgraph-io/badger/v4 v4.7.0 // indirect
 	github.com/dgraph-io/ristretto v0.1.2-0.20240116140435-c67e07994f91 // indirect
+	github.com/dgraph-io/ristretto/v2 v2.2.0 // indirect
 	github.com/dis2/bls12 v0.0.0-20210118063312-e2c12a28055c // indirect
 	github.com/dolthub/maphash v0.1.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
+	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gofrs/flock v0.8.1 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/glog v1.2.0 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/snappy v0.0.5-0.20220116011046-fa5810519dcb // indirect
-	github.com/google/flatbuffers v1.12.1 // indirect
+	github.com/google/flatbuffers v25.2.10+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
@@ -77,6 +79,7 @@ require (
 	github.com/jessevdk/go-flags v1.6.1 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/magiconair/properties v1.8.6 // indirect
+	github.com/mitchellh/colorstring v0.0.0-20190213212951-d06e56a500db // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/pelletier/go-toml v1.9.5 // indirect
@@ -87,6 +90,7 @@ require (
 	github.com/recoilme/sortedset v0.0.0-20200825100557-fdc6fff0bc87 // indirect
 	github.com/rosedblabs/diskhash v0.0.0-20230910084041-289755737e2a // indirect
 	github.com/rosedblabs/wal v1.3.6 // indirect
+	github.com/schollz/progressbar/v3 v3.18.0 // indirect
 	github.com/shiena/ansicolor v0.0.0-20151119151921-a422bbe96644 // indirect
 	github.com/simplespy/bls12 v0.4.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
@@ -100,6 +104,10 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	go.etcd.io/bbolt v1.3.8 // indirect
 	go.opencensus.io v0.24.0 // indirect
+	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
+	go.opentelemetry.io/otel v1.35.0 // indirect
+	go.opentelemetry.io/otel/metric v1.35.0 // indirect
+	go.opentelemetry.io/otel/trace v1.35.0 // indirect
 	golang.org/x/text v0.23.0 // indirect
 	gopkg.in/go-playground/validator.v8 v8.18.2 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
@@ -135,14 +143,14 @@ require (
 	github.com/filosottile/powersoftau v0.0.0-20180220134833-e2af11381747
 	github.com/gagliardetto/treeout v0.1.4 // indirect
 	github.com/gammazero/deque v0.2.1
-	github.com/go-logr/logr v1.2.4 // indirect
+	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-mmap/mmap v0.7.0
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
 	github.com/golang/leveldb v0.0.0-20170107010102-259d9253d719
 	github.com/golang/mock v1.6.0 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/btree v1.1.2
-	github.com/google/go-cmp v0.6.0 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/gtank/ristretto255 v0.1.2
 	github.com/icza/kvcache v0.0.0-20230330133025-f5eb6361aef6
@@ -153,13 +161,13 @@ require (
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/keep-network/keep-core v1.21.0
 	github.com/kilic/bls12-381 v0.1.0
-	github.com/klauspost/compress v1.17.9 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.4 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/logrusorgru/aurora v2.0.3+incompatible // indirect
 	github.com/lotusdblabs/lotusdb/v2 v2.1.0
 	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-runewidth v0.0.14 // indirect
+	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/maypok86/otter v1.2.4
 	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
@@ -181,13 +189,13 @@ require (
 	github.com/prometheus/procfs v0.10.1 // indirect
 	github.com/quic-go/qtls-go1-19 v0.3.2 // indirect
 	github.com/quic-go/qtls-go1-20 v0.2.2 // indirect
-	github.com/rivo/uniseg v0.4.4 // indirect
-	github.com/rogpeppe/go-internal v1.12.0 // indirect
+	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/rogpeppe/go-internal v1.13.1 // indirect
 	github.com/ryanavella/wide v0.0.0-20190709032049-e93517939246
 	github.com/samber/lo v1.49.1
 	github.com/simplespy/bgls v0.7.0
 	github.com/skycccu/copernicus v0.0.0-20180825092906-a24b6ab9ee2f
-	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/spf13/pflag v1.0.6 // indirect
 	github.com/streamingfast/logging v0.0.0-20230608130331-f22c91403091 // indirect
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
 	github.com/taurusgroup/frost-ed25519 v0.0.0-20210707140332-5abc84a4dba7
@@ -207,9 +215,9 @@ require (
 	golang.org/x/crypto v0.36.0 // indirect
 	golang.org/x/exp v0.0.0-20240904232852-e7e105dedf7e // indirect
 	golang.org/x/mod v0.22.0 // indirect
-	golang.org/x/net v0.34.0 // indirect
-	golang.org/x/term v0.30.0 // indirect
+	golang.org/x/net v0.38.0 // indirect
+	golang.org/x/term v0.32.0 // indirect
 	golang.org/x/time v0.9.0 // indirect
 	golang.org/x/tools v0.29.0 // indirect
-	google.golang.org/protobuf v1.36.5 // indirect
+	google.golang.org/protobuf v1.36.6 // indirect
 )

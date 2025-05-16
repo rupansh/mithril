@@ -108,6 +108,7 @@ func run(c *cobra.Command, args []string) {
 
 		// just processing the snapshot - not executing blocks.
 		if startSlot < 0 {
+			accountsDb.CloseDb();
 			return
 		}
 

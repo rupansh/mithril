@@ -19,7 +19,8 @@ import (
 	"github.com/Overclock-Validator/mithril/pkg/accountsdb"
 	"github.com/Overclock-Validator/mithril/pkg/mlog"
 	"github.com/Overclock-Validator/mithril/pkg/statsd"
-	"github.com/Overclock-Validator/sniper"
+
+	// "github.com/Overclock-Validator/sniper"
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
 	"github.com/klauspost/compress/zstd"
@@ -97,6 +98,7 @@ type indexEntryBuilderTask struct {
 type indexEntryCommitterTask struct {
 	IndexEntries []*accountsdb.AccountIndexEntry
 	Pubkeys      []solana.PublicKey
+	Slot         uint64
 }
 
 const (
@@ -170,12 +172,13 @@ func BuildAccountsIndexFromSnapshot(snapshotFile string, accountsDbDir string) (
 		return nil, nil, err
 	}
 
-	db, err := sniper.Open(sniper.Dir(indexOutputDir), sniper.ChunksCollision(32))
+	db, err := accountsdb.OpenBadgerForSnapshot(indexOutputDir)
 	if err != nil {
 		mlog.Log.Errorf("failed to open database: %s\n", err)
 		return nil, nil, err
 	}
 	defer ants.Release()
+	stopGc := accountsdb.BadgerGcThread(db)
 
 	var largestFileId atomic.Uint64
 	wg := sync.WaitGroup{}
@@ -185,6 +188,8 @@ func BuildAccountsIndexFromSnapshot(snapshotFile string, accountsDbDir string) (
 		task := i.(indexEntryCommitterTask)
 		writer := new(bytes.Buffer)
 
+		keys := make([][]byte, len(task.Pubkeys))
+		vals := make([][]byte, len(task.Pubkeys))
 		for idx, entry := range task.IndexEntries {
 			writer.Reset()
 			encoder := bin.NewBinEncoder(writer)
@@ -193,12 +198,16 @@ func BuildAccountsIndexFromSnapshot(snapshotFile string, accountsDbDir string) (
 				mlog.Log.Errorf("failed to encode index entry: %s\n", err)
 				return
 			}
-
-			err = db.SetIfSlotHigher(task.Pubkeys[idx][:], writer.Bytes(), 0)
-			if err != nil {
-				mlog.Log.Errorf("error calling SetIfHigherSlot for %s: %s\n", task.Pubkeys[idx], err)
-			}
+			keys[idx] = task.Pubkeys[idx].Bytes()
+			v := writer.Bytes(); 
+			vals[idx] = make([]byte, len(v));
+			copy(vals[idx], v);
 		}
+
+		accountsdb.SetAccountsForSlotSnapshot(db, task.Slot, keys, vals)
+		// if err != nil {
+		// 	mlog.Log.Errorf("error calling SetIfHigherSlot for %s: %s\n", task.Pubkeys[idx], err)
+		// }
 	})
 
 	indexEntryBuilderPool, _ := ants.NewPoolWithFunc(500, func(i interface{}) {
@@ -212,7 +221,7 @@ func BuildAccountsIndexFromSnapshot(snapshotFile string, accountsDbDir string) (
 		totalTarBytes := tarBufferBytes.Add(-int64(len(task.Data)))
 		statsd.Gauge("accounts_index.tar_buffer_bytes", float64(totalTarBytes), nil, 1)
 
-		commitTask := indexEntryCommitterTask{IndexEntries: entries, Pubkeys: pubkeys}
+		commitTask := indexEntryCommitterTask{IndexEntries: entries, Pubkeys: pubkeys, Slot: task.Slot}
 		wg.Add(1)
 		err = indexEntryCommiterPool.Invoke(commitTask)
 		if err != nil {
@@ -286,6 +295,7 @@ func BuildAccountsIndexFromSnapshot(snapshotFile string, accountsDbDir string) (
 			if err != nil {
 				mlog.Log.Errorf("error calling indexEntryBuilderPool.Invoke\n")
 			}
+
 		}
 	})
 
@@ -317,6 +327,11 @@ func BuildAccountsIndexFromSnapshot(snapshotFile string, accountsDbDir string) (
 
 	mlog.Log.Infof("done in %s. waiting for all tasks to complete.\n", time.Since(start))
 	wg.Wait()
+	err = accountsdb.BuildPrefixIndex(db)
+	if err != nil {
+		mlog.Log.Errorf("error building prefix index: %s\n", err)
+		return nil, nil, err
+	}
 	mlog.Log.Infof("snapshot processed in %s.\n", time.Since(start))
 
 	largestFileIdFile, err := os.Create(fmt.Sprintf("%s/largest_file_id", accountsDbDir))
@@ -357,7 +372,7 @@ func BuildAccountsIndexFromSnapshot(snapshotFile string, accountsDbDir string) (
 
 	bankHashFile.Close()
 
-	accountsDb := &accountsdb.AccountsDb{IndexDb: db, AcctsDir: appendVecsOutputDir, IndexDir: indexOutputDir}
+	accountsDb := &accountsdb.AccountsDb{IndexDb: db, StopGc: stopGc, AcctsDir: appendVecsOutputDir, IndexDir: indexOutputDir}
 	accountsDb.LargestFileId.Store(largestFileId.Load())
 	copy(accountsDb.BankHashBytes[:], manifest.Bank.Hash[:])
 
