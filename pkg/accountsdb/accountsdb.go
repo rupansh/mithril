@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"sort"
 	"sync/atomic"
 	"time"
 
@@ -16,7 +15,6 @@ import (
 	"github.com/Overclock-Validator/mithril/pkg/sbpf"
 	"github.com/Overclock-Validator/mithril/pkg/util"
 
-	// "github.com/Overclock-Validator/sniper"
 	"github.com/dgraph-io/badger/v4"
 	bin "github.com/gagliardetto/binary"
 	"github.com/gagliardetto/solana-go"
@@ -24,15 +22,15 @@ import (
 )
 
 type AccountsDb struct {
-	IndexDb         *badger.DB
-	StopGc          chan struct{}
-	AcctsDir        string
-	IndexDir        string
-	LargestFileId   atomic.Uint64
-	BankHashBytes   [32]byte
-	VoteAcctCache   otter.Cache[solana.PublicKey, *accounts.Account]
-	CommonAcctCache otter.Cache[solana.PublicKey, *accounts.Account]
-	ProgramCache    otter.Cache[solana.PublicKey, *sbpf.Program]
+	IndexDb       *badger.DB
+	StopGc        chan struct{}
+	AcctsDir      string
+	IndexDir      string
+	LargestFileId atomic.Uint64
+	BankHashBytes [32]byte
+	VoteAcctCache otter.Cache[solana.PublicKey, *accounts.Account]
+	// CommonAcctCache otter.Cache[solana.PublicKey, *accounts.Account]
+	ProgramCache otter.Cache[solana.PublicKey, *sbpf.Program]
 }
 
 var (
@@ -41,7 +39,7 @@ var (
 
 func OpenBadgerForSnapshot(dbDir string) (*badger.DB, error) {
 	dbOpts := badger.DefaultOptions(dbDir)
-	dbOpts.BlockCacheSize = 8 * 1024 * 1024 * 1024
+	dbOpts.BlockCacheSize = 4 * 1024 * 1024 * 1024
 	dbOpts.NumCompactors = 12
 	dbOpts.NumGoroutines = 24
 	dbOpts.NumMemtables = 24
@@ -59,13 +57,13 @@ func OpenBadgerForSnapshot(dbDir string) (*badger.DB, error) {
 
 func OpenBadgerWithRecommendedOptions(dbDir string) (*badger.DB, error) {
 	dbOpts := badger.DefaultOptions(dbDir)
-	dbOpts.IndexCacheSize = 10 * 1024 * 1024 * 1024
+	dbOpts.IndexCacheSize = 1024 * 1024 * 1024
 	dbOpts.BlockCacheSize = 1024 * 1024 * 1024
-	dbOpts.NumCompactors = 8
-	dbOpts.NumGoroutines = 16
-	dbOpts.NumMemtables = 16
-	dbOpts.MemTableSize = 256 * 1024 * 1024
-	db, err := badger.Open(dbOpts)
+	dbOpts.NumCompactors = 6
+	dbOpts.NumGoroutines = 8
+	// dbOpts.NumMemtables = 8
+	// dbOpts.MemTableSize = 256 * 1024 * 1024
+	db, err := badger.OpenManaged(dbOpts)
 	if err != nil {
 		mlog.Log.Infof("failed to open database: %s\n", err)
 		return nil, err
@@ -189,14 +187,14 @@ func (accountsDb *AccountsDb) InitCaches() {
 	}
 
 	// TODO: review size of common accounts cache
-	accountsDb.CommonAcctCache, err = otter.MustBuilder[solana.PublicKey, *accounts.Account](250_000).
-		Cost(func(key solana.PublicKey, acct *accounts.Account) uint32 {
-			return 1
-		}).
-		Build()
-	if err != nil {
-		panic(err)
-	}
+	// accountsDb.CommonAcctCache, err = otter.MustBuilder[solana.PublicKey, *accounts.Account](250_000).
+	// 	Cost(func(key solana.PublicKey, acct *accounts.Account) uint32 {
+	// 		return 1
+	// 	}).
+	// 	Build()
+	// if err != nil {
+	// 	panic(err)
+	// }
 }
 
 func (accountsDb *AccountsDb) MaybeGetProgramFromCache(pubkey solana.PublicKey) (*sbpf.Program, bool) {
@@ -207,16 +205,20 @@ func (accountsDb *AccountsDb) AddProgramToCache(pubkey solana.PublicKey, program
 	accountsDb.ProgramCache.Set(pubkey, program)
 }
 
+func (accountsDb *AccountsDb) RemoveProgramFromCache(pubkey solana.PublicKey) {
+	accountsDb.ProgramCache.Delete(pubkey)
+}
+
 func (accountsDb *AccountsDb) GetAccount(slot uint64, pubkey solana.PublicKey) (*accounts.Account, error) {
 	cachedAcct, hasAcct := accountsDb.VoteAcctCache.Get(pubkey)
 	if hasAcct {
 		return cachedAcct, nil
 	}
 
-	cachedAcct, hasAcct = accountsDb.CommonAcctCache.Get(pubkey)
-	if hasAcct {
-		return cachedAcct, nil
-	}
+	// cachedAcct, hasAcct = accountsDb.CommonAcctCache.Get(pubkey)
+	// if hasAcct {
+	// 	return cachedAcct, nil
+	// }
 
 	var acctIdxEntryBytes []byte
 	err := accountsDb.IndexDb.View(func(txn *badger.Txn) error {
@@ -332,110 +334,20 @@ func SetAccountsForSlotSnapshot(indexDb *badger.DB, slot uint64, k, v [][]byte) 
 	// }
 }
 
-func BuildPrefixIndex(indexDb *badger.DB) error {
-	iterTxn := indexDb.NewTransactionAt(math.MaxUint64, false)
-	defer iterTxn.Discard()
-
-	txn := indexDb.NewTransactionAt(math.MaxUint64, true)
-
-	opts := badger.DefaultIteratorOptions
-	opts.Prefix = []byte("pubkey:")
-
-	it := iterTxn.NewIterator(opts)
-	defer it.Close()
-
-	for it.Rewind(); it.Valid(); it.Next() {
-		item := it.Item()
-		kRaw := item.Key()
-		slotBe := make([]byte, 8)
-		item.Value(func(v []byte) error {
-			slot := binary.LittleEndian.Uint64(v)
-			binary.BigEndian.PutUint64(slotBe, slot)
-			return nil
-		})
-
-		prefixIdxKey := new(bytes.Buffer)
-		prefixIdxKey.WriteString("prefixidx:")
-		prefixIdxKey.Write(slotBe)
-		prefixIdxKey.WriteString(":")
-		prefixIdxKey.Write(kRaw[7:])
-
-		err := txn.Set(prefixIdxKey.Bytes(), []byte{})
-		if err == badger.ErrTxnTooBig {
-			_ = txn.Commit()
-			txn = indexDb.NewTransactionAt(math.MaxUint64, true)
-			_ = txn.Set(prefixIdxKey.Bytes(), []byte{})
-		}
-	}
-
-	txn.Commit()
-
-	return nil
-}
-
 func SetIfSlotHigher(indexDb *badger.DB, k, v []byte) error {
-	for {
-		txn := indexDb.NewTransaction(true)
-		defer txn.Discard()
+	newSlot := binary.LittleEndian.Uint64(v)
+	txn := indexDb.NewTransactionAt(math.MaxUint64, true)
+	defer txn.Discard();
 
-		prefixedKey := pubKeyWithPrefix(k)
-		currentValItem, err := txn.Get(prefixedKey)
-		newSlot := binary.LittleEndian.Uint64(v)
-		if err == nil {
-			var existingSlot uint64
-			currentValItem.Value(func(v []byte) error {
-				existingSlot = binary.LittleEndian.Uint64(v)
-				return nil
-			});
-
-			if existingSlot >= newSlot {
-				return nil
-			}
-
-			oldSlotBe := make([]byte, 8)
-			binary.BigEndian.PutUint64(oldSlotBe, existingSlot)
-			oldPrefixIdxKey := new(bytes.Buffer)
-			oldPrefixIdxKey.WriteString("prefixidx:")
-			oldPrefixIdxKey.Write(oldSlotBe)
-			oldPrefixIdxKey.WriteString(":")
-			oldPrefixIdxKey.Write(k)
-
-			err = txn.Delete(oldPrefixIdxKey.Bytes())
-			if err != nil {
-				return err
-			}
-		} else if err != badger.ErrKeyNotFound {
-			return err
-		}
-
-		err = txn.Set(prefixedKey, v)
-		if err != nil {
-			return err
-		}
-
-		slotBe := make([]byte, 8)
-		binary.BigEndian.PutUint64(slotBe, newSlot)
-		prefixIdxKey := new(bytes.Buffer)
-		prefixIdxKey.WriteString("prefixidx:")
-		// ensures lexicographic ordering
-		prefixIdxKey.Write(slotBe)
-		prefixIdxKey.WriteString(":")
-		prefixIdxKey.Write(k)
-
-		// set to empty value
-		err = txn.Set(prefixIdxKey.Bytes(), []byte{})
-		if err != nil {
-			return err
-		}
-
-		err = txn.Commit()
-
-		if err == badger.ErrConflict {
-			continue
-		}
-
+	prefixedKey := pubKeyWithPrefix(k)
+	err := txn.Set(prefixedKey, v)
+	if err != nil {
 		return err
 	}
+
+	err = txn.CommitAt(newSlot, nil);
+
+	return err
 }
 
 func (accountsDb *AccountsDb) StoreAccounts(accts []*accounts.Account, slot uint64) error {
@@ -461,7 +373,7 @@ func (accountsDb *AccountsDb) StoreAccounts(accts []*accounts.Account, slot uint
 			continue
 		}
 
-		accountsDb.CommonAcctCache.Set(acct.Key, acct)
+		// accountsDb.CommonAcctCache.Set(acct.Key, acct)
 
 		// create index entry, encode it and write it to the index kv store
 		// offset field is specified as the current num of bytes written to the appendvec buffer.
@@ -507,77 +419,79 @@ func (accountsDb *AccountsDb) StoreAccounts(accts []*accounts.Account, slot uint
 }
 
 func (accountsDb *AccountsDb) KeysBetweenPrefixes(startPrefix uint64, endPrefix uint64) []solana.PublicKey {
-	keyObjs := make([]solana.PublicKey, 0)
-	err := accountsDb.IndexDb.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = []byte("prefixidx:")
-		opts.PrefetchValues = false
+	return nil
+	// keyObjs := make([]solana.PublicKey, 0)
+	// err := accountsDb.IndexDb.View(func(txn *badger.Txn) error {
+	// 	opts := badger.DefaultIteratorOptions
+	// 	opts.Prefix = []byte("prefixidx:")
+	// 	opts.PrefetchValues = false
 
-		slotBe := make([]byte, 8)
-		binary.BigEndian.PutUint64(slotBe, startPrefix)
+	// 	slotBe := make([]byte, 8)
+	// 	binary.BigEndian.PutUint64(slotBe, startPrefix)
 
-		minKeyBuf := new(bytes.Buffer)
-		minKeyBuf.WriteString("prefixidx:")
-		minKeyBuf.Write(slotBe)
-		minKeyBuf.WriteString(":")
+	// 	minKeyBuf := new(bytes.Buffer)
+	// 	minKeyBuf.WriteString("prefixidx:")
+	// 	minKeyBuf.Write(slotBe)
+	// 	minKeyBuf.WriteString(":")
 
-		minKey := minKeyBuf.Bytes()
+	// 	minKey := minKeyBuf.Bytes()
 
-		it := txn.NewIterator(opts)
-		defer it.Close()
+	// 	it := txn.NewIterator(opts)
+	// 	defer it.Close()
 
-		for it.Seek(minKey); it.Valid(); it.Next() {
-			item := it.Item()
-			kRaw := item.Key()
-			// Slot is the 8 bytes after prefixidx:
-			slot := kRaw[10:18]
-			if binary.BigEndian.Uint64(slot) > endPrefix {
-				break
-			}
-			// pubkey comes after the slot + ":"
-			pubKeyRaw := kRaw[19:]
+	// 	for it.Seek(minKey); it.Valid(); it.Next() {
+	// 		item := it.Item()
+	// 		kRaw := item.Key()
+	// 		// Slot is the 8 bytes after prefixidx:
+	// 		slot := kRaw[10:18]
+	// 		if binary.BigEndian.Uint64(slot) > endPrefix {
+	// 			break
+	// 		}
+	// 		// pubkey comes after the slot + ":"
+	// 		pubKeyRaw := kRaw[19:]
 
-			keyObject := solana.PublicKeyFromBytes(pubKeyRaw)
-			keyObjs = append(keyObjs, keyObject)
+	// 		keyObject := solana.PublicKeyFromBytes(pubKeyRaw)
+	// 		keyObjs = append(keyObjs, keyObject)
 
-		}
+	// 	}
 
-		return nil
-	})
-	if err != nil {
-		panic(fmt.Sprintf("error in KeysBetweenPrefixes: %s", err))
-	}
+	// 	return nil
+	// })
+	// if err != nil {
+	// 	panic(fmt.Sprintf("error in KeysBetweenPrefixes: %s", err))
+	// }
 
-	return keyObjs
+	// return keyObjs
 }
 
 func (accountsDb *AccountsDb) AllKeys() [][]byte {
-	keys := make([][]byte, 0)
-	err := accountsDb.IndexDb.View(func(txn *badger.Txn) error {
-		opts := badger.DefaultIteratorOptions
-		opts.Prefix = []byte("pubkey:")
-		opts.PrefetchValues = false
+	return nil
+	// keys := make([][]byte, 0)
+	// err := accountsDb.IndexDb.View(func(txn *badger.Txn) error {
+	// 	opts := badger.DefaultIteratorOptions
+	// 	opts.Prefix = []byte("pubkey:")
+	// 	opts.PrefetchValues = false
 
-		it := txn.NewIterator(opts)
-		defer it.Close()
+	// 	it := txn.NewIterator(opts)
+	// 	defer it.Close()
 
-		for it.Rewind(); it.Valid(); it.Next() {
-			item := it.Item()
-			kRaw := item.KeyCopy(nil)
-			keys = append(keys, kRaw[7:]) // strip off the prefix
-		}
+	// 	for it.Rewind(); it.Valid(); it.Next() {
+	// 		item := it.Item()
+	// 		kRaw := item.KeyCopy(nil)
+	// 		keys = append(keys, kRaw[7:]) // strip off the prefix
+	// 	}
 
-		return nil
-	})
-	if err != nil {
-		panic(fmt.Sprintf("error in AllKeys: %s", err))
-	}
+	// 	return nil
+	// })
+	// if err != nil {
+	// 	panic(fmt.Sprintf("error in AllKeys: %s", err))
+	// }
 
-	sort.SliceStable(keys, func(i, j int) bool {
-		return util.PubkeyCmpByteSlice(keys[i], keys[j])
-	})
+	// sort.SliceStable(keys, func(i, j int) bool {
+	// 	return util.PubkeyCmpByteSlice(keys[i], keys[j])
+	// })
 
-	return keys
+	// return keys
 }
 
 func (accountsDb *AccountsDb) BankHash() [32]byte {

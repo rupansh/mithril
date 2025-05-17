@@ -98,16 +98,12 @@ var invalidEnumValue = errors.New("invalid enum value")
 func resolveNativeProgramById(programId [32]byte) (func(ctx *ExecutionCtx) error, error) {
 
 	switch programId {
-	case ConfigProgramAddr:
-		return ConfigProgramExecute, nil
 	case SystemProgramAddr:
 		return SystemProgramExecute, nil
 	case StakeProgramAddr:
 		return StakeProgramExecute, nil
 	case VoteProgramAddr:
 		return VoteProgramExecute, nil
-	case AddressLookupTableAddr:
-		return AddressLookupTableExecute, nil
 	case ComputeBudgetProgramAddr:
 		return ComputeBudgetExecute, nil
 	case BpfLoader2Addr:

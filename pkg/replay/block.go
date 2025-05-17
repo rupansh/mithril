@@ -595,7 +595,7 @@ func ReplayBlocks(acctsDb *accountsdb.AccountsDb, acctsDbPath string, snapshotMa
 		}
 
 		// workaround for skipping the soon-to-be obsolete EAH
-		if block.Slot == partitionedRewardsInfo.EahStopOffsetSlot {
+		if partitionedEpochRewardsEnabled && block.Slot == partitionedRewardsInfo.EahStopOffsetSlot {
 			if replayCtx.HasEpochAcctsHash {
 				block.EpochAcctsHash = replayCtx.EpochAcctsHash
 			} else {

@@ -96,7 +96,7 @@ func newExecCtx(slotCtx *sealevel.SlotCtx, transactionAccts *sealevel.Transactio
 	execCtx.Accounts = accounts.NewMemAccounts()
 	execCtx.SlotCtx = slotCtx
 	execCtx.TransactionContext.ComputeBudgetLimits = computeBudgetLimits
-	execCtx.ComputeMeter.Disable()
+	// execCtx.ComputeMeter.Disable()
 
 	return execCtx
 }
@@ -345,11 +345,15 @@ func handleFailedTx(slotCtx *sealevel.SlotCtx, tx *solana.Transaction, txMeta *r
 	return txFeeInfo, fmt.Errorf("%s", txMeta.Err)
 }
 
-func ProcessTransaction(slotCtx *sealevel.SlotCtx, tx *solana.Transaction, txMeta *rpc.TransactionMeta) (*fees.TxFeeInfo, error) {
-	/*err := tx.VerifySignatures()
+func verifySignatures(tx *solana.Transaction) {
+	err := tx.VerifySignatures();
 	if err != nil {
-		return NewTxErrInvalidSignature(err.Error())
-	}*/
+		panic(fmt.Sprintf("error - tx %s had an invalid signature", tx.Signatures[0]));
+	}
+}
+
+func ProcessTransaction(slotCtx *sealevel.SlotCtx, tx *solana.Transaction, txMeta *rpc.TransactionMeta) (*fees.TxFeeInfo, error) {
+	go verifySignatures(tx);	
 
 	instrs, acctMetasPerInstr, err := instrsAndAcctMetasFromTx(tx, slotCtx.Features)
 	if err != nil {
@@ -362,9 +366,9 @@ func ProcessTransaction(slotCtx *sealevel.SlotCtx, tx *solana.Transaction, txMet
 	}
 
 	// fast path for failed tx's
-	if txMeta.Err != nil {
-		return handleFailedTx(slotCtx, tx, txMeta, instrs, computeBudgetLimits)
-	}
+	// if txMeta.Err != nil {
+	// 	return handleFailedTx(slotCtx, tx, txMeta, instrs, computeBudgetLimits)
+	// }
 
 	err = sealevel.WriteInstructionsSysvar(&slotCtx.Accounts, instrs)
 	if err != nil {
@@ -397,7 +401,7 @@ func ProcessTransaction(slotCtx *sealevel.SlotCtx, tx *solana.Transaction, txMet
 		execCtx.TransactionContext.Accounts.Unlock(count)
 	}
 
-	txFeeInfo, payerNewLamports, err := fees.CalculateAndDeductTxFees(tx, txMeta, instrs, &execCtx.TransactionContext.Accounts, computeBudgetLimits)
+	txFeeInfo, _, err := fees.CalculateAndDeductTxFees(tx, txMeta, instrs, &execCtx.TransactionContext.Accounts, computeBudgetLimits)
 	if err != nil {
 		return txFeeInfo, nil
 	}
@@ -431,7 +435,7 @@ func ProcessTransaction(slotCtx *sealevel.SlotCtx, tx *solana.Transaction, txMet
 		if err == nil {
 			for _, am := range acctMetas {
 				if am.IsWritable {
-					slotCtx.RecordWritableAcct(am.Pubkey)
+					// slotCtx.RecordWritableAcct(am.Pubkey)
 					writablePubkeys = append(writablePubkeys, am.Pubkey)
 				}
 			}
@@ -442,26 +446,26 @@ func ProcessTransaction(slotCtx *sealevel.SlotCtx, tx *solana.Transaction, txMet
 		}
 	}
 
-	txAcctMetas, err := tx.AccountMetaList()
-	if err != nil {
-		panic(err)
-	}
+	// txAcctMetas, err := tx.AccountMetaList()
+	// if err != nil {
+	// 	panic(err)
+	// }
 
-	for _, txAcctMeta := range txAcctMetas {
-		if isWritable(tx, txAcctMeta, &execCtx.GlobalCtx.Features) {
-			slotCtx.RecordWritableAcct(txAcctMeta.PublicKey)
-			writablePubkeys = append(writablePubkeys, txAcctMeta.PublicKey)
-		}
-	}
+	// for _, txAcctMeta := range txAcctMetas {
+	// 	if isWritable(tx, txAcctMeta, &execCtx.GlobalCtx.Features) {
+	// 		slotCtx.RecordWritableAcct(txAcctMeta.PublicKey)
+	// 		writablePubkeys = append(writablePubkeys, txAcctMeta.PublicKey)
+	// 	}
+	// }
 
 	mlog.Log.Debugf("[+] tx %s - compute units consumed: %d", tx.Signatures[0], execCtx.ComputeMeter.Used())
 
-	if instrErr != nil {
-		mlog.Log.Infof("\ntx logs:\n")
-		for _, logEntry := range log.Logs {
-			mlog.Log.Infof("%s\n", logEntry)
-		}
-	}
+	// if instrErr != nil {
+	// 	mlog.Log.Infof("\ntx logs:\n")
+	// 	for _, logEntry := range log.Logs {
+	// 		mlog.Log.Infof("%s\n", logEntry)
+	// 	}
+	// }
 
 	// check for CU consumed divergences
 	if instrErr == nil && *txMeta.ComputeUnitsConsumed != execCtx.ComputeMeter.Used() {
@@ -503,33 +507,50 @@ func ProcessTransaction(slotCtx *sealevel.SlotCtx, tx *solana.Transaction, txMet
 	// if there was an error in the tx, do not update account states, except for deducting the tx fee
 	// from the payer account
 	if instrErr != nil || rentStateErr != nil {
-		p, err := slotCtx.GetAccount(payerAcct.Key)
-		if err != nil {
-			panic(fmt.Sprintf("unable to get slot account to update payer acct state after failed tx: %s", err))
+		return handleFailedTx(slotCtx, tx, txMeta, instrs, computeBudgetLimits)
+		// p, err := slotCtx.GetAccount(payerAcct.Key)
+		// if err != nil {
+		// 	panic(fmt.Sprintf("unable to get slot account to update payer acct state after failed tx: %s", err))
+		// }
+
+		// p.Lamports = payerNewLamports
+		// err = slotCtx.SetAccount(payerAcct.Key, p)
+		// if err != nil {
+		// 	panic(fmt.Sprintf("unable to set slot account to update state of payer acct after failed t: %s", err))
+		// }
+
+		// slotCtx.RecordModifiedAcct(payerAcct.Key)
+		// execCtx.TransactionContext.Accounts.Unlock(0)
+
+		// noncePubkey, isEligibleDurableTx := handleDurableNonceIfEligibleFailedTx(instrs, tx, execCtx, slotCtx)
+		// if isEligibleDurableTx {
+		// 	slotCtx.RecordModifiedAcct(noncePubkey)
+		// }
+
+		// var txErr error
+		// if rentStateErr != nil {
+		// 	txErr = rentStateErr
+		// } else {
+		// 	txErr = instrErr
+		// }
+
+		// return txFeeInfo, fmt.Errorf("tx err: %s", txErr)
+	}
+
+	txAcctMetas, err := tx.AccountMetaList()
+
+	if err != nil {
+		panic(err)
+	}
+
+	for _, txAcctMeta := range txAcctMetas {
+		if isWritable(tx, txAcctMeta, &execCtx.GlobalCtx.Features) {
+			writablePubkeys = append(writablePubkeys, txAcctMeta.PublicKey)
 		}
+	}
 
-		p.Lamports = payerNewLamports
-		err = slotCtx.SetAccount(payerAcct.Key, p)
-		if err != nil {
-			panic(fmt.Sprintf("unable to set slot account to update state of payer acct after failed t: %s", err))
-		}
-
-		slotCtx.RecordModifiedAcct(payerAcct.Key)
-		execCtx.TransactionContext.Accounts.Unlock(0)
-
-		noncePubkey, isEligibleDurableTx := handleDurableNonceIfEligibleFailedTx(instrs, tx, execCtx, slotCtx)
-		if isEligibleDurableTx {
-			slotCtx.RecordModifiedAcct(noncePubkey)
-		}
-
-		var txErr error
-		if rentStateErr != nil {
-			txErr = rentStateErr
-		} else {
-			txErr = instrErr
-		}
-
-		return txFeeInfo, fmt.Errorf("tx err: %s", txErr)
+	for _, pk := range writablePubkeys {
+		slotCtx.RecordWritableAcct(pk)
 	}
 
 	handleModifiedAccounts(slotCtx, execCtx)

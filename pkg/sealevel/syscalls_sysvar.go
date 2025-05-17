@@ -6,6 +6,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/Overclock-Validator/mithril/pkg/accounts"
 	"github.com/Overclock-Validator/mithril/pkg/mlog"
 	"github.com/Overclock-Validator/mithril/pkg/safemath"
 	"github.com/Overclock-Validator/mithril/pkg/sbpf"
@@ -197,14 +198,26 @@ const (
 var permittedSysvarAddrs = []solana.PublicKey{SysvarClockAddr, SysvarEpochScheduleAddr, SysvarEpochRewardsAddr, SysvarRentAddr,
 	SysvarSlotHashesAddr, SysvarStakeHistoryAddr, SysvarLastRestartSlotAddr}
 
-func fetchSysvarBytesForPubkey(execCtx *ExecutionCtx, pubkey solana.PublicKey) ([]byte, error) {
+func fetchSysvarBytesForPubkey(pubkey solana.PublicKey) ([]byte, error) {
 	if !slices.Contains(permittedSysvarAddrs, pubkey) {
 		return nil, fmt.Errorf("unrecognised sysvar")
 	}
 
-	sysvarAcct, err := execCtx.SlotCtx.AccountsDb.GetAccount(execCtx.SlotCtx.Slot, pubkey)
-	if err != nil {
-		panic(fmt.Sprintf("unable to fetch sysvar %s acct from accountsdb", pubkey))
+	var sysvarAcct *accounts.Account
+	if pubkey == SysvarClockAddr {
+		sysvarAcct = SysvarCache.Clock.Acct
+	} else if pubkey == SysvarEpochScheduleAddr {
+		sysvarAcct = SysvarCache.EpochSchedule.Acct
+	} else if pubkey == SysvarEpochRewardsAddr {
+		sysvarAcct = SysvarCache.EpochRewards.Acct
+	} else if pubkey == SysvarRentAddr {
+		sysvarAcct = SysvarCache.Rent.Acct
+	} else if pubkey == SysvarSlotHashesAddr {
+		sysvarAcct = SysvarCache.SlotHashes.Acct
+	} else if pubkey == SysvarStakeHistoryAddr {
+		sysvarAcct = SysvarCache.StakeHistory.Acct
+	} else if pubkey == SysvarLastRestartSlotAddr {
+		sysvarAcct = SysvarCache.LastRestartSlot.Acct
 	}
 
 	return sysvarAcct.Data, nil
@@ -246,7 +259,7 @@ func SyscallGetSysvarImpl(vm sbpf.VM, sysvarIdAddr uint64, varAddr uint64, offse
 		return syscallErr(InstrErrArithmeticOverflow)
 	}
 
-	sysvarBuf, err := fetchSysvarBytesForPubkey(execCtx, sysvarId)
+	sysvarBuf, err := fetchSysvarBytesForPubkey(sysvarId)
 	if err != nil {
 		return syscallSuccess(sysvarNotFound)
 	}

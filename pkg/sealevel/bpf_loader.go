@@ -2304,6 +2304,7 @@ func UpgradeableLoaderClose(execCtx *ExecutionCtx, txCtx *TransactionCtx, instrC
 					if err != nil {
 						return err
 					}
+					execCtx.SlotCtx.AccountsDb.RemoveProgramFromCache(closeKey);
 				}
 
 			default:

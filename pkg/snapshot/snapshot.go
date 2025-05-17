@@ -327,11 +327,6 @@ func BuildAccountsIndexFromSnapshot(snapshotFile string, accountsDbDir string) (
 
 	mlog.Log.Infof("done in %s. waiting for all tasks to complete.\n", time.Since(start))
 	wg.Wait()
-	err = accountsdb.BuildPrefixIndex(db)
-	if err != nil {
-		mlog.Log.Errorf("error building prefix index: %s\n", err)
-		return nil, nil, err
-	}
 	mlog.Log.Infof("snapshot processed in %s.\n", time.Since(start))
 
 	largestFileIdFile, err := os.Create(fmt.Sprintf("%s/largest_file_id", accountsDbDir))
