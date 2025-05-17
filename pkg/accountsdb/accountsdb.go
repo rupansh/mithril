@@ -30,7 +30,12 @@ type AccountsDb struct {
 	BankHashBytes [32]byte
 	VoteAcctCache otter.Cache[solana.PublicKey, *accounts.Account]
 	// CommonAcctCache otter.Cache[solana.PublicKey, *accounts.Account]
-	ProgramCache otter.Cache[solana.PublicKey, *sbpf.Program]
+	ProgramCache otter.Cache[solana.PublicKey, *ProgramCacheEntry]
+}
+
+type ProgramCacheEntry struct {
+	Program        *sbpf.Program
+	DeploymentSlot uint64
 }
 
 var (
@@ -177,8 +182,8 @@ func (accountsDb *AccountsDb) InitCaches() {
 	}
 
 	// TODO: review size of program cache
-	accountsDb.ProgramCache, err = otter.MustBuilder[solana.PublicKey, *sbpf.Program](10_000).
-		Cost(func(key solana.PublicKey, prog *sbpf.Program) uint32 {
+	accountsDb.ProgramCache, err = otter.MustBuilder[solana.PublicKey, *ProgramCacheEntry](10_000).
+		Cost(func(key solana.PublicKey, progEntry *ProgramCacheEntry) uint32 {
 			return 1
 		}).
 		Build()
@@ -197,11 +202,11 @@ func (accountsDb *AccountsDb) InitCaches() {
 	// }
 }
 
-func (accountsDb *AccountsDb) MaybeGetProgramFromCache(pubkey solana.PublicKey) (*sbpf.Program, bool) {
+func (accountsDb *AccountsDb) MaybeGetProgramFromCache(pubkey solana.PublicKey) (*ProgramCacheEntry, bool) {
 	return accountsDb.ProgramCache.Get(pubkey)
 }
 
-func (accountsDb *AccountsDb) AddProgramToCache(pubkey solana.PublicKey, program *sbpf.Program) {
+func (accountsDb *AccountsDb) AddProgramToCache(pubkey solana.PublicKey, program *ProgramCacheEntry) {
 	accountsDb.ProgramCache.Set(pubkey, program)
 }
 

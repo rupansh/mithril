@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Overclock-Validator/mithril/pkg/accounts"
+	"github.com/Overclock-Validator/mithril/pkg/accountsdb"
 	"github.com/Overclock-Validator/mithril/pkg/features"
 	"github.com/Overclock-Validator/mithril/pkg/mlog"
 	"github.com/Overclock-Validator/mithril/pkg/safemath"
@@ -1053,7 +1054,8 @@ func executeProgramFromBytes(execCtx *ExecutionCtx, programAddr solana.PublicKey
 		return err
 	}
 
-	execCtx.SlotCtx.AccountsDb.AddProgramToCache(programAddr, program)
+	entry := &accountsdb.ProgramCacheEntry{Program: program}
+	execCtx.SlotCtx.AccountsDb.AddProgramToCache(programAddr, entry)
 
 	return executeLoadedProgram(execCtx, program, &syscallRegistry)
 }
@@ -1116,9 +1118,11 @@ func BpfLoaderProgramExecute(execCtx *ExecutionCtx) error {
 	programOwner := programAcct.Owner()
 
 	if programOwner == BpfLoader2Addr || programOwner == BpfLoaderDeprecatedAddr {
-		loadedProgram, hasLoadedProgram = execCtx.SlotCtx.AccountsDb.MaybeGetProgramFromCache(programAcct.Key())
+		var programCacheEntry *accountsdb.ProgramCacheEntry
+		programCacheEntry, hasLoadedProgram = execCtx.SlotCtx.AccountsDb.MaybeGetProgramFromCache(programAcct.Key())
 		if hasLoadedProgram {
 			programAcctKey = programAcct.Key()
+			loadedProgram = programCacheEntry.Program
 		} else { // program is not cached
 			if len(programAcct.Data()) == 0 {
 				var paTmp *accounts.Account
@@ -1162,9 +1166,14 @@ func BpfLoaderProgramExecute(execCtx *ExecutionCtx) error {
 			}
 		}
 
-		loadedProgram, hasLoadedProgram = execCtx.SlotCtx.AccountsDb.MaybeGetProgramFromCache(programAcctState.Program.ProgramDataAddress)
+		var programCacheEntry *accountsdb.ProgramCacheEntry
+		programCacheEntry, hasLoadedProgram = execCtx.SlotCtx.AccountsDb.MaybeGetProgramFromCache(programAcctState.Program.ProgramDataAddress)
 		if hasLoadedProgram {
+			if programCacheEntry.DeploymentSlot >= execCtx.SlotCtx.Slot {
+				return InstrErrInvalidAccountData
+			}
 			programAcctKey = programAcctState.Program.ProgramDataAddress
+			loadedProgram = programCacheEntry.Program
 		} else { // program is not cached
 			programDataAcct, err := execCtx.SlotCtx.GetAccount(programAcctState.Program.ProgramDataAddress)
 			if err != nil {
@@ -1592,7 +1601,9 @@ func UpgradeableLoaderDeployWithMaxDataLen(execCtx *ExecutionCtx, txCtx *Transac
 
 	mlog.Log.Debugf("deployed program: %s", newProgramId)
 
-	execCtx.SlotCtx.AccountsDb.AddProgramToCache(programDataKey, loadedProgram)
+	entry := &accountsdb.ProgramCacheEntry{Program: loadedProgram, DeploymentSlot: clock.Slot}
+	execCtx.SlotCtx.AccountsDb.AddProgramToCache(programDataKey, entry)
+
 	return nil
 }
 
@@ -1842,7 +1853,9 @@ func UpgradeableLoaderUpgrade(execCtx *ExecutionCtx, txCtx *TransactionCtx, inst
 
 	mlog.Log.Debugf("upgraded program %s", program.Key())
 
-	execCtx.SlotCtx.AccountsDb.AddProgramToCache(programData.Key(), loadedProgram)
+	entry := &accountsdb.ProgramCacheEntry{Program: loadedProgram, DeploymentSlot: clock.Slot}
+	execCtx.SlotCtx.AccountsDb.AddProgramToCache(programData.Key(), entry)
+
 	return nil
 }
 
@@ -2304,7 +2317,7 @@ func UpgradeableLoaderClose(execCtx *ExecutionCtx, txCtx *TransactionCtx, instrC
 					if err != nil {
 						return err
 					}
-					execCtx.SlotCtx.AccountsDb.RemoveProgramFromCache(closeKey);
+					execCtx.SlotCtx.AccountsDb.RemoveProgramFromCache(closeKey)
 				}
 
 			default:
@@ -2490,7 +2503,9 @@ func UpgradeableLoaderExtendProgram(execCtx *ExecutionCtx, txCtx *TransactionCtx
 
 	mlog.Log.Debugf("Extended ProgramData account by %d bytes", additionalBytes)
 
-	execCtx.SlotCtx.AccountsDb.AddProgramToCache(programDataAcct.Key(), loadedProgram)
+	entry := &accountsdb.ProgramCacheEntry{Program: loadedProgram, DeploymentSlot: clock.Slot}
+	execCtx.SlotCtx.AccountsDb.AddProgramToCache(programDataAcct.Key(), entry)
+
 	return nil
 }
 
